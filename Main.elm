@@ -11,7 +11,7 @@ import Http
 import List
 
 
-vec_dim = 5
+vec_dim = 300
 num_nearest = 1
 
 -- Linear algebra operators
@@ -19,7 +19,7 @@ square n = n*n
 
 
 normalize v = 
-  List.map2 (/) v (List.repeat (List.length v) (sqrt (List.sum (List.map square v))))
+ List.map2 (/) v (List.repeat (List.length v) (sqrt (List.sum (List.map square v))))
 
 
 vec_add a b = 
@@ -108,8 +108,19 @@ list_take index vec =
    Nothing -> 0
 
 
+got_word_vecs_ : List Float -> List ( List Float ) -> List ( List Float )
+got_word_vecs_ long_vec res_vecs = 
+ if ( List.length long_vec ) == 0 then
+  ( List.reverse res_vecs )
+ else
+  ( got_word_vecs_ ( List.drop vec_dim long_vec ) ( ( List.take vec_dim long_vec ) :: res_vecs ) )
+ 
+got_word_vecs total_vec = 
+ got_word_vecs_ total_vec []
+
+
 parse_wordvec words vecs = 
- filter_wordvec_dict ( Dict.map (\k a -> (normalize a)) ( Dict.fromList ( List.map2 ( \k v -> (k, v) ) ( String.lines words ) ( vec_reshape vecs ) ) ) )
+ filter_wordvec_dict ( Dict.map (\k a -> (normalize a)) ( Dict.fromList ( List.map2 ( \k v -> (k, v) ) ( String.lines words ) vecs ) ) )
 
 -- MAIN
 
@@ -153,24 +164,37 @@ type Msg
   | Change2 String
   | Change3 String
   | GotWords (Result Http.Error String) 
-  | GotVecs (Result Http.Error (List Float) )
+  | GotVecs (Result Http.Error ( List (List Float) ) )
 
 
 list : Decoder a -> Decoder (List a)
 list decoder =
-  unsignedInt32 BE
+  unsignedInt32 LE
     |> andThen (\len -> Decode.loop (len, []) (listStep decoder))
 
 
 listStep : Decoder a -> (Int, List a) -> Decoder (Step (Int, List a) (List a))
 listStep decoder (n, xs) =
   if n <= 0 then
-    succeed (Done xs)
+    succeed (Done ( List.reverse xs ) )
   else
     Decode.map (\x -> Loop (n - 1, x :: xs)) decoder
 
 
-decodeVecs = list ( Decode.float32 BE )
+list2 : Decoder a -> Decoder (List a)
+list2 decoder2 =
+    Decode.loop (0, []) (list2Step decoder2)
+
+
+list2Step : Decoder a -> (Int, List a) -> Decoder (Step (Int, List a) (List a))
+list2Step decoder2 (n, xs) =
+  if n == vec_dim then
+    succeed (Done ( List.reverse xs ) )
+  else
+    Decode.map (\x -> Loop (n + 1, x :: xs)) decoder2
+
+
+decodeVecs = list ( list2 ( Decode.float32 LE ) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -238,8 +262,8 @@ subscriptions model =
  Sub.none
 
 
--- VIEW
-
+view_vec v = 
+ List.foldl (\a b -> a ++ "," ++ b) "" v
 
 view : Model -> Html Msg
 view model =

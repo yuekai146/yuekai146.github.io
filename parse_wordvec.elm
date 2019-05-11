@@ -25,11 +25,13 @@ errorMessage error =
       "Timeout"
     Http.NetworkError  ->
       "Network Error"
-    Http.UnexpectedPayload _ ->
-      "UnexpectedPayload"
-    Http.BadResponse _ _ ->
-      "BadResponse"
-
+    Http.BadUrl url ->
+      "BadUrl: " ++ url
+    Http.BadStatus status_code ->
+      "BadStatus: " ++ ( String.fromInt status_code )
+    Http.BadBody body ->
+      "Bad body: " ++ body
+ 
 
 -- MODEL
 
@@ -61,7 +63,7 @@ type Msg
 
 list : Decoder a -> Decoder (List a)
 list decoder =
-  unsignedInt32 LE
+  unsignedInt32 BE
     |> andThen (\len -> Decode.loop (len, []) (listStep decoder))
 
 
@@ -73,7 +75,7 @@ listStep decoder (n, xs) =
     Decode.map (\x -> Loop (n - 1, x :: xs)) decoder
 
 
-decodeVecs = list ( Decode.float32 LE )
+decodeVecs = list ( Decode.float32 BE )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -83,8 +85,8 @@ update msg model =
       case result of 
        Ok fullVecs -> 
          ( Success ( List.sum fullVecs ), Cmd.none )
-       Err _ ->
-         ( Failure ( errorMessage Err ), Cmd.none )
+       Err error ->
+         ( Failure ( errorMessage error ), Cmd.none )
 
 
 -- SUBSCRIPTIONS
@@ -100,7 +102,7 @@ view : Model -> Html Msg
 view model =
  case model of
   Failure err ->
-   text "Unable to load uyghur word vectors."
+   
    text err
 
   Loading ->

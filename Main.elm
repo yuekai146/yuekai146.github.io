@@ -1,4 +1,8 @@
+import Array
 import Browser
+import Bytes
+import Bytes exposing (Endianness(..))
+import Bytes.Decode as Decode exposing (..)
 import Dict
 import Html exposing (Html, Attribute, div, input, text)
 import Html.Attributes exposing (..)
@@ -7,7 +11,7 @@ import Http
 import List
 
 
-vec_dim = 4
+vec_dim = 5
 num_nearest = 1
 
 -- Linear algebra operators
@@ -52,7 +56,7 @@ get_topk word_list score_list =
 
 get_vec wordvec_dict w = case Dict.get w wordvec_dict of
  Just vec -> vec
- Nothing -> List.repeat 300 0
+ Nothing -> List.repeat vec_dim 0
 
 
 check wordvec_dict w = case Dict.get w wordvec_dict of
@@ -80,32 +84,32 @@ get_result wordvec_dict w1 w2 w3 =
   ""
 
 
-convert l = 
- Tuple.mapSecond ( List.map toFloat ) (split_w_v l)
-
-
 toFloat x = 
  case String.toFloat x of
  Just val -> val        
  Nothing -> 0.0
 
 
-split_w_v l =
- case ( List.head l ) of 
-  Just word ->                       
-   case ( List.tail l ) of           
-    Just vec -> (word, vec)         
-    Nothing ->                        
-     ("", ( List.repeat vec_dim "0.0" ))      
-  Nothing -> ("", ( List.repeat vec_dim "0.0" ))
-
 filter_wordvec_dict w2v = 
  Dict.filter (\k v -> k /= "") w2v
 
-parse_wordvec wordvec_text = 
- filter_wordvec_dict ( Dict.map (\k a -> (normalize a)) ( Dict.fromList ( List.map convert ( List.map String.words (String.lines wordvec_text) ) ) ) ) 
+
+vec_reshape vec = List.map Array.toList ( Array.toList ( Array.initialize ( (List.length vec) // vec_dim ) ( \row -> ( Array.initialize vec_dim ( \col -> list_take ( row * vec_dim + col + 1 ) vec ) ) ) ) )
 
 
+list_take index vec = 
+ if index == 1 then
+  case (List.head vec) of 
+   Just x -> x
+   Nothing -> 0
+ else
+  case (List.tail vec) of 
+   Just l_tmp -> (list_take (index-1) l_tmp)
+   Nothing -> 0
+
+
+parse_wordvec words vecs = 
+ filter_wordvec_dict ( Dict.map (\k a -> (normalize a)) ( Dict.fromList ( List.map2 ( \k v -> (k, v) ) ( String.lines words ) ( vec_reshape vecs ) ) ) )
 
 -- MAIN
 
@@ -125,16 +129,19 @@ type alias Content =
 type Model =
   Failure
   | Loading
+  | Success_words String
   | Success ( Dict.Dict String (List Float) ) Content
 
 
 init : () -> (Model, Cmd Msg)
 init _ =
   ( Loading
-  , Http.get
-     { url = "https://raw.githubusercontent.com/yuekai146/yuekai146.github.io/master/uy_model.vec"
-     , expect = Http.expectString GotText
-     }
+  , Cmd.batch 
+     [ Http.get
+        { url = "https://raw.githubusercontent.com/yuekai146/yuekai146.github.io/master/model.words"
+        , expect = Http.expectString GotWords
+        }
+     ]
   )
 
 
@@ -145,7 +152,25 @@ type Msg
   = Change String
   | Change2 String
   | Change3 String
-  | GotText (Result Http.Error String)
+  | GotWords (Result Http.Error String) 
+  | GotVecs (Result Http.Error (List Float) )
+
+
+list : Decoder a -> Decoder (List a)
+list decoder =
+  unsignedInt32 BE
+    |> andThen (\len -> Decode.loop (len, []) (listStep decoder))
+
+
+listStep : Decoder a -> (Int, List a) -> Decoder (Step (Int, List a) (List a))
+listStep decoder (n, xs) =
+  if n <= 0 then
+    succeed (Done xs)
+  else
+    Decode.map (\x -> Loop (n - 1, x :: xs)) decoder
+
+
+decodeVecs = list ( Decode.float32 BE )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -155,33 +180,56 @@ update msg model =
      case model of 
       Success wordvec_dict content -> 
        ( ( Success wordvec_dict { content | w1 = newContent } ), Cmd.none )
+      Success_words words ->
+       ( Failure, Cmd.none )
       Failure ->
        ( Failure, Cmd.none )
       Loading ->
        ( Loading, Cmd.none )
+    
     Change2 newContent ->
      case model of 
       Success wordvec_dict content -> 
-       ( ( Success wordvec_dict { content | w2 = newContent } ), Cmd.none ) 
+       ( ( Success wordvec_dict { content | w2 = newContent } ), Cmd.none )
+      Success_words words ->
+       ( Failure, Cmd.none ) 
       Failure ->
        ( Failure, Cmd.none )
       Loading ->
        ( Loading, Cmd.none )
+    
     Change3 newContent ->
      case model of 
       Success wordvec_dict content -> 
        ( ( Success wordvec_dict { content | w3 = newContent } ), Cmd.none )
+      Success_words words ->
+       ( Failure, Cmd.none )
       Failure ->
        ( Failure, Cmd.none )
       Loading ->
        ( Loading, Cmd.none )
-    GotText result ->
+    
+    GotWords result ->
       case result of
-        Ok fullText ->
-          ( Success (parse_wordvec fullText) ({ w1 = "", w2 = "", w3 = "" }), Cmd.none )
+       Ok fullWords -> 
+        ( Success_words fullWords,  Http.get { url = "https://raw.githubusercontent.com/yuekai146/yuekai146.github.io/master/model.vec.b32", expect = Http.expectBytes GotVecs decodeVecs } )
+       Err _ ->
+        ( Failure, Cmd.none )
 
-        Err _ ->
+    GotVecs result ->
+      case result of 
+       Ok fullVecs ->
+        case model of 
+         Success wordvec_dict content -> 
+          ( Success wordvec_dict content, Cmd.none )
+         Success_words words ->
+          ( Success ( parse_wordvec words fullVecs ) { w1 = "", w2 = "", w3 = "" }, Cmd.none )
+         Failure ->
           ( Failure, Cmd.none )
+         Loading ->
+          ( Loading, Cmd.none )
+       Err _ ->
+         ( Failure, Cmd.none )
 
 
 -- SUBSCRIPTIONS
@@ -200,7 +248,10 @@ view model =
    text "Unable to load uyghur word vectors."
 
   Loading ->
-   text "Loading uyghur word vectors."
+   text "Loading uyghur words."
+
+  Success_words words ->
+   text "Loading word vectors."
 
   Success wordvec_dict content ->
     div [style "font-size" "48px"]
